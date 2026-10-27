@@ -48,15 +48,7 @@
 | Java 项目、测试与发行 JAR | 客户端实现 | 核对代码行为、独立向量、本机 HTTP 测试与最终 JAR 离线结果 |
 | 同配置第 1 页在线对照 | 执行至 preview | 证明这份配置在对照时能完成初始化、基础凭据和第 1 页元数据解析 |
 
-原始文件位置：
 
-```text
-/Users/fuchunming/Downloads/Untitled.har
-/Users/fuchunming/Downloads/1111.har
-/Users/fuchunming/Desktop/2222222.har
-/Users/fuchunming/Desktop/okhttp-reader-explorer/1122/manifest.json
-/Users/fuchunming/Desktop/okhttp-reader-explorer/1122/trace.json
-```
 
 用户明确说明：`1111.har` 中第 120 页的那条请求，是最初在 Charles 中修改的测试。本文把它作为“人工改参记录”，不会把它当成浏览器自然行为或权限规则的依据。
 

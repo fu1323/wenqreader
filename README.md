@@ -1069,6 +1069,14 @@ WASM 的 `run` 根据操作分发至密码处理或指纹处理；导出的 `che
 两份早期 HAR 内对应阅读器脚本的内容一致。脚本摘要指提取后的 UTF-8 文件，不是 HTTP 压缩传输体。
 
 ## 16. 交付文件与当前状态
+```text
+requestId： /deep/page/imgs/... 
+
+accessToken：对应阅读页面 URL 或 /api/v7/read/k 请求查询参数里的 access_token。(没有携带，留空即可)。
+
+frameUrl：仅用于阅读器嵌在 iframe 中的特定分支，值是阅读器 iframe 自己的完整 URL，不是外层网页地址。(可能留空)。
+
+```
 
 - [本报告：完整逆向、浏览器指纹与客户端分析](/Users/fuchunming/Documents/Codex/2026-10-27/key/outputs/文泉学堂阅读器逆向分析与OkHttp客户端完整报告.md)
 - [Java 客户端源码与发行包](/Users/fuchunming/Documents/Codex/2026-10-27/key/outputs/okhttp-reader-explorer.zip)

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src blob: data:; connect-src 'none'">
+<title>阅读器 · 分片合成</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#19322c;background:#f3f5f1}*{box-sizing:border-box}body{margin:0}main{max-width:1080px;margin:48px auto;padding:0 24px}header{margin-bottom:28px}.eyebrow{font-size:12px;letter-spacing:2px;color:#57776b}h1{font-size:34px;margin:10px 0}p{line-height:1.75;color:#52655e}.layout{display:grid;grid-template-columns:360px 1fr;gap:24px}.card{background:#fff;border:1px solid #dce5df;border-radius:18px;padding:24px}.drop{border:2px dashed #b5c9bf;border-radius:13px;padding:24px 15px;text-align:center;background:#f8faf7}.drop.over{border-color:#26745d;background:#e8f5ec}.drop strong{display:block;margin-bottom:10px}.drop p{font-size:13px;margin:0 0 16px}button,.choose{display:inline-block;border:0;border-radius:9px;background:#21694f;color:white;padding:12px 17px;cursor:pointer;font-size:14px;font-weight:600}button:disabled{opacity:.45;cursor:not-allowed}.secondary{background:#eaf0eb;color:#315748;margin-top:10px}.choose input{position:absolute;width:1px;height:1px;opacity:0}button:focus-visible,.choose:focus-within{outline:3px solid #9cc9b6;outline-offset:3px}.actions{display:flex;gap:8px;margin-top:18px;flex-wrap:wrap}.status{white-space:pre-line;font-size:14px;line-height:1.65;margin:18px 0 0}.status.error{color:#a12f2f}.status.success{color:#21694f}.summary{font-size:13px;background:#f5f7f3;padding:14px;border-radius:10px;line-height:1.9;white-space:pre-line;margin-top:16px;overflow-wrap:anywhere}.summary:empty{display:none}.hint{font-size:12px;margin-top:18px}.preview{min-height:450px;display:flex;align-items:center;justify-content:center;background:repeating-conic-gradient(#f0f3ee 0% 25%,#f8faf6 0% 50%) 50% / 20px 20px;border-radius:12px;overflow:hidden;padding:20px}.preview canvas{display:block;max-width:100%;height:auto;max-height:740px;object-fit:contain;box-shadow:0 8px 28px #1b362626}.empty{text-align:center;color:#6c7d72;font-size:14px;line-height:1.8}.tag{font-size:12px;color:#527361;margin-bottom:14px}footer{font-size:12px;color:#6b7d71;line-height:1.8;margin:22px 0 40px}@media(max-width:760px){main{margin-top:28px}.layout{grid-template-columns:1fr}.preview{min-height:250px}h1{font-size:28px}}
+</style></head><body><main>
+<header><div class="eyebrow">READER EXPLORER / LOCAL TOOL</div><h1>把分片还原成一页</h1><p>读取客户端输出，按编号排列、恢复方向，保存原始尺寸的 PNG。</p></header>
+<div class="layout"><section class="card">
+<div id="drop" class="drop"><strong>拖入文件，或选择一个输出目录</strong><p>需要 manifest.json 和全部 fragment-* 图片。<br>可一起选择，也可分几次添加。</p>
+<label class="choose">选择文件<input id="files" type="file" multiple accept=".json,.webp,.png,.jpg,.jpeg"></label><br>
+<label class="choose secondary">选择文件夹<input id="folder" type="file" webkitdirectory multiple></label></div>
+<div class="actions"><button id="compose" disabled>合成整页</button><button id="clear" class="secondary" style="margin-top:0">清空</button></div>
+<div id="status" class="status" role="status" aria-live="polite">等待选择文件。</div><div id="summary" class="summary"></div>
+<p class="hint">仅处理本机文件，不联网、不上传。请选择一个页面的输出目录。只有 preview.webp、没有高清分片时无法合成。</p>
+</section><section class="card"><div class="tag" id="previewTitle">整页预览</div><div class="preview" id="preview"><div class="empty">合成后的页面会显示在这里<br>导出保留原始像素尺寸</div></div><div class="actions"><button id="download" disabled>下载 PNG</button></div></section></div>
+<footer>适配已分析的阅读器 8.0.422 分片布局，支持 0° / 90° / 180° / 270°。遇到尺寸不匹配会停止并提示，不会自动拉伸图片。</footer>
+</main><script>
+'use strict';
+const $=id=>document.getElementById(id);
+const state={files:new Map(),canvas:null,url:null,busy:false,filename:'page.png'};
+const MAX_PIXELS=40000000,MAX_FILE=50*1024*1024;
+function fail(message){throw new Error(message)}
+function basename(path){return String(path).replace(/\\/g,'/').split('/').pop()}
+function integer(v,label,min=1){if(typeof v!=='number'&&typeof v!=='string')fail(label+'无效');if(String(v).trim()==='')fail(label+'无效');const n=Number(v);if(!Number.isSafeInteger(n)||n<min)fail(label+'必须是有效整数');return n}
+function plan(m){
+ if(!m||typeof m!=='object'||Array.isArray(m))fail('manifest.json 不是有效的对象。');
+ const entries=m.fragments;if(!Array.isArray(entries)||!entries.length)fail('没有高清分片记录。当前目录可能只完成了 preview 阶段，或请求被服务端拒绝；请先取得完整分片。');
+ const order=m.fragmentOrder;if(!Array.isArray(order)||!order.length||order.length>128)fail('缺少有效的 fragmentOrder，无法确定总片数。');
+ const count=order.length,ids=order.map(v=>integer(v,'分片编号',0));
+ if(new Set(ids).size!==count||ids.some(v=>v>=count))fail('fragmentOrder 必须是从 0 到 '+(count-1)+' 的完整排列。');
+ const g=m.geometry;if(!Array.isArray(g)||g.length!==6)fail('geometry 必须包含六个尺寸/旋转参数。');
+ const width=integer(g[0],'普通分片宽'),last=integer(g[1],'末片宽'),height=integer(g[2],'分片高度');
+ if(!['string','number'].includes(typeof g[3])||String(g[3]).trim()==='')fail('旋转角度无效。');
+ const raw=Number(g[3]);if(!Number.isSafeInteger(raw)||raw%90!==0)fail('只支持 90 度整数倍旋转。');
+ const angle=((raw%360)+360)%360,naturalW=integer(g[4],'页面原始宽'),naturalH=integer(g[5],'页面原始高');
+ const stripW=width*(count-1)+last;
+ if(!Number.isSafeInteger(stripW)||stripW>32767||height>32767||stripW*height>MAX_PIXELS)fail('画布超过尺寸限制（4000 万像素、单边 32767）。');
+ const outW=angle%180?height:stripW,outH=angle%180?stripW:height;
+ if(outW!==naturalW||outH!==naturalH)fail('几何参数不一致：旋转后为 '+outW+'×'+outH+'，声明原始尺寸为 '+naturalW+'×'+naturalH+'。已停止，避免拉伸或裁切。');
+ const found=new Map(),names=new Set();
+ for(const e of entries){if(!e||typeof e!=='object')fail('分片记录格式无效。');const id=integer(e.fragmentId,'分片编号',0);
+  if(id>=count||found.has(id))fail('存在重复或超出范围的分片编号：'+id);
+  if(typeof e.file!=='string'||!e.file.trim())fail('分片 '+id+' 缺少文件名。');
+  const name=basename(e.file);if(!name||names.has(name))fail('多个分片使用了相同或无效的文件名。');names.add(name);
+  found.set(id,{id,name,x:width*id,width:id===count-1?last:width,height});
+ }
+ const missing=ids.filter(id=>!found.has(id));if(missing.length)fail('manifest 缺少分片记录：'+missing.join(', ')+'。需要完整下载后再合成。');
+ return {count,angle,stripW,height,outW,outH,parts:[...found.values()].sort((a,b)=>a.id-b.id)};
+}
+function loadImage(file){return new Promise((resolve,reject)=>{const url=URL.createObjectURL(file),img=new Image();img.onload=()=>{URL.revokeObjectURL(url);resolve(img)};img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('无法解码图片：'+file.name+'。请确认文件完整，浏览器支持此格式。'))};img.src=url})}
+function resetResult(){state.canvas=null;$('download').disabled=true;$('preview').replaceChildren();const e=document.createElement('div');e.className='empty';e.textContent='合成后的页面会显示在这里';$('preview').append(e);$('previewTitle').textContent='整页预览';if(state.url){URL.revokeObjectURL(state.url);state.url=null}}
+function message(text,kind=''){$('status').textContent=text;$('status').className='status '+kind}
+function busy(value){state.busy=value;for(const id of ['files','folder','clear'])$(id).disabled=value;$('compose').disabled=value||!state.files.has('manifest.json');$('download').disabled=value||!state.canvas}
+function addFiles(files){if(state.busy)return;try{
+ const relevant=[...files].filter(f=>f.name==='manifest.json'||/\.(webp|png|jpe?g)$/i.test(f.name));
+ if(!relevant.length)fail('未发现 manifest.json 或图片文件。拖入目录时请改用“选择文件夹”。');
+ const staged=new Map(state.files),incoming=new Set();
+ for(const f of relevant){if(incoming.has(f.name))fail('所选内容有重名文件 '+f.name+'，请选择单个页面目录。');incoming.add(f.name);if(f.size>MAX_FILE)fail('文件过大：'+f.name);staged.set(f.name,f)}
+ state.files=staged;resetResult();$('summary').textContent='';message('已选入 '+staged.size+' 个文件。'+(staged.has('manifest.json')?'可以开始合成。':'请继续添加 manifest.json。'));busy(false);
+ }catch(e){message(e.message,'error')}}
+async function compose(){if(state.busy)return;resetResult();$('summary').textContent='';busy(true);try{
+ const mf=state.files.get('manifest.json');if(!mf)fail('请先选择 manifest.json。');if(mf.size>1024*1024)fail('manifest.json 过大。');
+ let m;try{m=JSON.parse(await mf.text())}catch(e){fail('manifest.json 无法解析，请选择客户端生成的原始文件。')}
+ const p=plan(m),missing=p.parts.filter(x=>!state.files.has(x.name));if(missing.length)fail('缺少图片：'+missing.map(x=>x.name).join('、')+'。请继续添加这些文件。');
+ const canvas=document.createElement('canvas');canvas.width=p.outW;canvas.height=p.outH;canvas.setAttribute('aria-label','合成后的完整页面');const ctx=canvas.getContext('2d');if(!ctx)fail('浏览器无法创建绘图画布。');
+ ctx.save();ctx.translate(p.outW/2,p.outH/2);ctx.rotate(-p.angle*Math.PI/180);ctx.translate(-p.stripW/2,-p.height/2);ctx.imageSmoothingEnabled=false;
+ for(let i=0;i<p.parts.length;i++){const part=p.parts[i];message('正在合成 '+(i+1)+' / '+p.count+'：'+part.name);const img=await loadImage(state.files.get(part.name));
+  if(img.naturalWidth!==part.width||img.naturalHeight!==part.height)fail(part.name+' 尺寸为 '+img.naturalWidth+'×'+img.naturalHeight+'，元数据要求 '+part.width+'×'+part.height+'。已停止，未拉伸图片。');
+  ctx.drawImage(img,part.x,0);
+ }
+ ctx.restore();state.canvas=canvas;const safe=v=>String(v??'unknown').replace(/[^a-zA-Z0-9_-]/g,'_');state.filename='book-'+safe(m.bookId)+'-page-'+safe(m.page)+'.png';
+ $('preview').replaceChildren(canvas);$('previewTitle').textContent='整页预览 · '+p.outW+' × '+p.outH;
+ $('summary').textContent='图书 '+(m.bookId??'未知')+' · 第 '+(m.page??'未知')+' 页\n'+p.count+' 个分片 · 按编号 0—'+(p.count-1)+' 排列\n整体旋转 '+(-p.angle)+'° · 输出 '+p.outW+' × '+p.outH+'\n'+(m.completed===false?'原运行未完成，但分片、图片及几何参数已全部校验通过。':'原始像素合成，无缩放。');
+ message('合成完成，可以下载 PNG。','success');
+ }catch(e){resetResult();message(e.message||'合成失败。','error')}finally{busy(false)}}
+$('files').addEventListener('change',e=>{addFiles(e.target.files);e.target.value=''});$('folder').addEventListener('change',e=>{addFiles(e.target.files);e.target.value=''});
+$('compose').addEventListener('click',compose);$('clear').addEventListener('click',()=>{state.files.clear();resetResult();$('summary').textContent='';message('等待选择文件。');busy(false)});
+for(const type of ['dragenter','dragover'])$('drop').addEventListener(type,e=>{e.preventDefault();$('drop').classList.add('over')});
+for(const type of ['dragleave','drop'])$('drop').addEventListener(type,e=>{e.preventDefault();$('drop').classList.remove('over')});$('drop').addEventListener('drop',e=>addFiles(e.dataTransfer.files));
+$('download').addEventListener('click',()=>{if(!state.canvas)return;const canvas=state.canvas,name=state.filename;canvas.toBlob(blob=>{if(!blob){message('PNG 导出失败，浏览器可能内存不足。','error');return}if(state.url)URL.revokeObjectURL(state.url);state.url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=state.url;a.download=name;document.body.append(a);a.click();a.remove()},'image/png')});
+window.Composer={plan};
+</script></body></html>

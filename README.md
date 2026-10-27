@@ -1078,3 +1078,88 @@ WASM 的 `run` 根据操作分发至密码处理或指纹处理；导出的 `che
 - [最初的静态流程分析](/Users/fuchunming/Documents/Codex/2026-10-27/key/outputs/图片请求-key-流程分析.md)
 
 本报告汇总了后续抓包、格式修正和在线预览对照。理解当前实现与测试范围时，以本报告的明确边界为准：**完整图片 k 生成已通过真实 HAR 离线重算，Java 在线完整高清下载尚未完成验证，第 100 页目前在服务端预览业务校验处停止。**
+# 17. f12反调试
+
+它用了 disable-devtool 0.3.9，再加上阅读器自己的 F12/右键拦截。核心是“拦入口 + 检测控制台 + 检测后跳走”。
+代码分布在：
+- chunk-vendors.0c63757c.js：反调试库，Webpack 模块 02ca。
+- pdf.bdc53b74.js：启用配置，以及阅读器自己的按键拦截。
+## 1. 先拦截 F12、右键和开发者工具快捷键
+```text
+   阅读器组件里有这样的逻辑，整理后相当于：
+   document.oncontextmenu = function (event) {
+   event.returnValue = false;
+   };
+
+document.onkeydown =
+document.onkeyup =
+document.onkeypress = function (event) {
+if (event.keyCode === 123) { // F12
+event.returnValue = false;
+return false;
+}
+};
+```
+反调试库又在捕获阶段注册 keydown，调用 preventDefault()，拦截：
+平台	拦截的快捷键
+通用	F12
+Windows 等	Ctrl+Shift+I、Ctrl+Shift+J、Ctrl+U、Ctrl+S
+macOS	Command+Option+I/J/U、Command+S
+
+
+这层只是阻止页面收到的快捷键和右键默认行为，不能保证浏览器开发者工具绝对无法打开，所以还有后续检测。
+## 2. 每 200 毫秒检测一次
+```text
+   网站实际初始化配置包含：
+   {
+   disableMenu: true,
+   clearLog: true,
+   interval: 200,
+   disableSelect: false,
+   disableCopy: false,
+   disableCut: false,
+   disablePaste: false,
+   ondevtoolopen(type, defaultHandler) {
+   defaultHandler();
+   },
+   ondevtoolclose() {}
+   }
+```
+   因此，这一处配置开启了右键拦截和清理控制台，但没有开启库自带的复制、剪切、粘贴禁用。
+## 3. 它怎样知道控制台打开了
+   网站没有覆盖 detectors，使用库默认的 [1,3,4,5,6,7]：
+   检测器	原理
+   DefineId	创建 DOM 元素，给 id 设置 getter，再输出到控制台；如果控制台展示元素时读取 getter，就触发检测
+   DateToString	重写日期对象的 toString()，记录控制台输出过程中被调用的次数
+   FuncToString	对函数对象做类似的 toString() 调用计数
+   Performance	比较 console.table() 与 console.log() 输出大型对象的耗时
+   DebugLib	检查页面中是否出现正在显示的 Eruda、vConsole 调试面板
+   Debugger	库里有这个名称，但捕获实现需要特别区分，见下文
+
+
+其中 DefineId 的思路可以简化为：
+```text
+const element = document.createElement("div");
+
+Object.defineProperty(element, "id", {
+get() {
+onDevToolOpen();
+}
+});
+
+console.log(element);
+```
+利用的是控制台为了展示对象而产生的额外访问行为。 不同浏览器、版本和面板状态的表现不同，所以库组合了多种检测方式，并按浏览器条件启用。
+性能检测则构造大量对象，测量输出耗时。捕获代码里，当 console.table() 耗时超过记录的 console.log() 最大耗时约 10 倍时，会进入进一步确认和触发路径。
+4. 检测到以后做什么
+   网站的回调直接调用库默认处理函数。当前没有配置自定义跳转 URL 或替换 HTML，因此会走：
+   尝试 window.close()
+   → 尝试 history.back()
+   → 500 毫秒后跳转到库提供的错误页面
+   默认错误页面位于 theajack.github.io/disable-devtool/404.html。
+   浏览器可能拒绝脚本关闭普通标签页，因此不能保证每一步都成功；但这解释了为什么可能出现“打开开发者工具后页面后退或跳走”。
+   同时，clearLog: true 会持续清理控制台，导致日志难以保留。
+5. 两个容易误判的地方
+- 不是看到 Debugger 名称，就代表存在无限断点。 这份捕获代码的该检测器只剩时间差判断，且仅针对 iOS Chrome/Edge 启用；函数体中没有实际 debugger 语句，不能描述成常见的“循环 debugger 卡住页面”。
+- 库包含窗口尺寸检测，但本站默认配置没有启用它。 Size 的编号是 2，不在上述检测器数组中。因此不能仅凭源码存在 outerWidth - innerWidth，就断言本站靠窗口宽度判断 F12。
+  它和之前的浏览器指纹是两套机制。 指纹负责环境摘要、状态一致性和密码参数；这里的反调试主要影响网页交互与跳转。Java 客户端不执行这些 DOM、按键和控制台检测代码，所以不会触发这套本地反调试逻辑，但服务端的会话与阅读权限校验仍然存在。
